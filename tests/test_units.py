@@ -1,68 +1,89 @@
-from app.services.schema_validator import validate_schema
-from app.modules.bullshit_detector import _coords_sane, _deterministic_sanity
-from app.modules.crowd_tester import _percentile
-from app.models.schemas import SchemaResult, SanityResult, LoadResult, LatencyStats, Status
-from app.modules import report_generator
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+from app.main import app
+from app.models.schemas import POICheckRequest
+from app.services import heuristic_judge, poi_judge
+from app.services.poi_judge import POIJudgment
+
+client = TestClient(app)
 
 
-SCHEMA = {
-    "type": "object",
-    "required": ["route"],
-    "properties": {"route": {"type": "object"}},
-}
+def test_request_accepts_valid_coords():
+    req = POICheckRequest(name="groceries", lat=48.143890, lon=17.283289)
+    assert req.name == "groceries"
 
 
-def test_schema_valid():
-    assert validate_schema({"route": {}}, SCHEMA) == []
+def test_request_rejects_out_of_range_latitude():
+    with pytest.raises(ValidationError):
+        POICheckRequest(name="groceries", lat=412.7, lon=17.0)
 
 
-def test_schema_invalid_reports_missing_field():
-    errors = validate_schema({"not_route": 1}, SCHEMA)
-    assert errors and "route" in errors[0]
+def test_request_rejects_out_of_range_longitude():
+    with pytest.raises(ValidationError):
+        POICheckRequest(name="groceries", lat=48.0, lon=-999.0)
 
 
-def test_coords_out_of_range_flagged():
-    issues = _coords_sane({"geometry": [[412.7, -999.0]]})
-    assert any("latitude" in i for i in issues)
-    assert any("longitude" in i for i in issues)
+def test_request_rejects_empty_name():
+    with pytest.raises(ValidationError):
+        POICheckRequest(name="", lat=48.0, lon=17.0)
 
 
-def test_coords_in_range_clean():
-    assert _coords_sane({"geometry": [[40.71, -74.0]]}) == []
+def test_check_falls_back_to_heuristic_when_llm_disabled(monkeypatch):
+    monkeypatch.setattr(poi_judge, "is_enabled", lambda: False)
+    resp = client.post("/check", json={"name": "groceries", "lat": 48.14, "lon": 17.28})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["suitable"] is True
+    assert body["model"] == "heuristic"
 
 
-def test_placeholder_text_flagged():
-    issues = _deterministic_sanity({"summary": "example placeholder route"})
-    assert any("placeholder" in i for i in issues)
+def test_check_returns_verdict(monkeypatch):
+    monkeypatch.setattr(poi_judge, "is_enabled", lambda: True)
+
+    async def fake_judge(name, lat, lon):
+        return POIJudgment(suitable=True, reason="Urban Bratislava area; groceries are plausible.")
+
+    monkeypatch.setattr(poi_judge, "judge", fake_judge)
+
+    resp = client.post("/check", json={"name": "groceries", "lat": 48.14, "lon": 17.28})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["suitable"] is True
+    assert "groceries" in body["reason"].lower()
 
 
-def test_percentile_basic():
-    data = [float(x) for x in range(1, 101)]  # 1..100
-    assert _percentile(data, 0.50) == 50.5
-    assert _percentile(data, 0.95) == 95.05
-    assert _percentile(data, 0.99) == 99.01
+def test_check_rejects_bad_coords_with_422():
+    resp = client.post("/check", json={"name": "groceries", "lat": 999, "lon": 17.28})
+    assert resp.status_code == 422
 
 
-def test_verdict_approved_when_all_pass():
-    verdict = report_generator.build(
-        SchemaResult(passed=True),
-        SanityResult(passed=True),
-        LoadResult(
-            ran=True, passed=True, total_requests=100, rps=10.0, error_rate=0.0,
-            latency=LatencyStats(p50_ms=50, p95_ms=120, p99_ms=200, max_ms=250),
-        ),
-    )
-    assert verdict.status == Status.approved
-    assert verdict.failure_reasons == []
+def test_check_falls_back_when_llm_errors(monkeypatch):
+    monkeypatch.setattr(poi_judge, "is_enabled", lambda: True)
+
+    async def boom(name, lat, lon):
+        raise ConnectionError("ollama not running")
+
+    monkeypatch.setattr(poi_judge, "judge", boom)
+
+    resp = client.post("/check", json={"name": "groceries", "lat": 48.14, "lon": 17.28})
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "heuristic"
 
 
-def test_verdict_rejected_collects_reasons():
-    verdict = report_generator.build(
-        SchemaResult(passed=False, errors=["<root>: missing route"]),
-        SanityResult(passed=False, issues=["latitude out of range: 412.7"]),
-        LoadResult(ran=False),
-    )
-    assert verdict.status == Status.rejected
-    assert any("schema:" in r for r in verdict.failure_reasons)
-    assert any("sanity:" in r for r in verdict.failure_reasons)
-    assert any("skipped" in r for r in verdict.failure_reasons)
+def test_heuristic_accepts_real_name():
+    assert heuristic_judge.judge("groceries", 48.14, 17.28).suitable is True
+
+
+def test_heuristic_accepts_acronym():
+    assert heuristic_judge.judge("KFC", 48.14, 17.28).suitable is True
+
+
+def test_heuristic_rejects_placeholder():
+    assert heuristic_judge.judge("lorem ipsum", 48.14, 17.28).suitable is False
+
+
+def test_heuristic_rejects_gibberish():
+    assert heuristic_judge.judge("xkcdz", 48.14, 17.28).suitable is False
+
