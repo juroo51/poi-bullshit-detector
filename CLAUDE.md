@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A FastAPI service that vets **points of interest**. A caller POSTs a POI name and a coordinate to `/check`; the service decides whether that name is a suitable, plausible label for a place at that location and returns a `{suitable, reason, model}` verdict. It uses a **free, locally-run LLM via [Ollama](https://ollama.com)** (no API key, no cloud); if Ollama is unreachable it falls back to a key-free **heuristic judge** (name sanity only), so the service always runs.
+A FastAPI service that vets **points of interest**. A caller POSTs a POI name, a coordinate, and optionally a list of existing nearby POI names (`candidates`) to `/check`; the service decides whether that name is a suitable, plausible label for a place at that location, and whether it duplicates one of the candidates, returning a `{suitable, reason, model, duplicate, duplicate_of}` verdict. It uses a **free, locally-run LLM via [Ollama](https://ollama.com)** (no API key, no cloud); if Ollama is unreachable it falls back to a key-free **heuristic judge** (name sanity + normalized duplicate match), so the service always runs.
 
 ## Commands
 
@@ -26,16 +26,16 @@ Smoke test: with the server running, POST `{"name": "groceries", "lat": 48.14389
 
 A single LLM call wrapped in thin layers — no pipeline, no outbound probing of third-party APIs.
 
-1. **Request** ([app/models/schemas.py](app/models/schemas.py)) — `POICheckRequest` validates `name` (non-empty) and `lat`/`lon` against the configured bounds; out-of-range coords yield a 422 before any model call.
-2. **LLM judge** ([app/services/poi_judge.py](app/services/poi_judge.py)) — the primary. Calls Ollama's `chat(...)` with `format=POIJudgment.model_json_schema()` (structured output) and `temperature=0` on `settings.llm_model` (default `llama3.2`), then validates the JSON into `POIJudgment{suitable, reason}`.
-3. **Heuristic judge** ([app/services/heuristic_judge.py](app/services/heuristic_judge.py)) — key-free fallback returning the same `POIJudgment`. No AI/map data, so it sanity-checks the *name* only (placeholder + gibberish rejection). Don't let it claim geographic verification — the reason string says "heuristic check only".
-4. **Checker** ([app/core/checker.py](app/core/checker.py)) — if `poi_judge.is_enabled()` (`ENABLE_LLM`), tries the LLM judge and **catches `_LLM_FAILURES`** (Ollama down, model missing, malformed output) to fall back to the heuristic. Sets `model` to `llama3.2` or `"heuristic"`, builds `POICheckResponse`.
+1. **Request** ([app/models/schemas.py](app/models/schemas.py)) — `POICheckRequest` validates `name` (non-empty) and `lat`/`lon` against the configured bounds; out-of-range coords yield a 422 before any model call. `candidates` is an optional `list[str]` of existing nearby POI names (defaults to `[]`).
+2. **LLM judge** ([app/services/poi_judge.py](app/services/poi_judge.py)) — the primary. Calls Ollama's `chat(...)` with `format=POIJudgment.model_json_schema()` (structured output) and `temperature=0` on `settings.llm_model` (default `llama3.2`), then validates the JSON into `POIJudgment{suitable, reason, duplicate, duplicate_of}`. It judges both suitability and **semantic** same-place duplicates against `candidates` in the one call; the prompt is strict — same-category-different-place is *not* a duplicate.
+3. **Heuristic judge** ([app/services/heuristic_judge.py](app/services/heuristic_judge.py)) — key-free fallback returning the same `POIJudgment`. No AI/map data, so it sanity-checks the *name* only (placeholder + gibberish rejection) and detects duplicates via `find_duplicate` (normalized string equality: case/punctuation/whitespace/accents ignored). Don't let it claim geographic verification — the reason string says "heuristic check only".
+4. **Checker** ([app/core/checker.py](app/core/checker.py)) — if `poi_judge.is_enabled()` (`ENABLE_LLM`), tries the LLM judge and **catches `_LLM_FAILURES`** (Ollama down, model missing, malformed output) to fall back to the heuristic. Sets `model` to `llama3.2` or `"heuristic"`. In `_to_response` it applies a **deterministic dedup backstop**: `heuristic_judge.find_duplicate` forces `duplicate=true` for exact/normalized matches the LLM missed (small local models drop even identical strings), then builds `POICheckResponse`. `duplicate` is reported independently of `suitable`.
 5. **Endpoint** ([app/main.py](app/main.py)) — `/check` always returns 200; the fallback is handled in the checker, so the route stays trivial.
 
 Layering: `core/` orchestrates, `services/` holds the two judges. The LLM judge judges **plausibility from geographic knowledge**, not live map presence — keep that framing in the system prompt.
 
 ### poi_judge specifics
-This is a deliberately provider-neutral, **non-Anthropic** integration — it talks to a local Ollama server via the `ollama` Python client. Do not reintroduce the Anthropic SDK or the `claude-api` patterns here. Structured output is done with Ollama's `format=<json schema>`; keep `temperature=0` for stable verdicts. To use a different local model, change `LLM_MODEL` to anything you've `ollama pull`ed.
+This is a deliberately provider-neutral, **non-Anthropic** integration — it talks to a local Ollama server via the `ollama` Python client. Do not reintroduce the Anthropic SDK or the `claude-api` patterns here. Structured output is done with Ollama's `format=<json schema>`; keep `temperature=0` for stable verdicts. To use a different local model, change `LLM_MODEL` to anything you've `ollama pull`ed. The duplicate rule in `_SYSTEM` is intentionally strict (exact-same-place only); the checker's deterministic backstop is what guarantees exact matches, so don't loosen the prompt to compensate for a weak model.
 
 ## Conventions
 
