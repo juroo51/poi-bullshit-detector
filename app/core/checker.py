@@ -22,7 +22,15 @@ async def check(req: POICheckRequest) -> POICheckResponse:
 
 
 def _to_response(judgment, req: POICheckRequest, model: str) -> POICheckResponse:
+    suitable, reason = judgment.suitable, judgment.reason
     duplicate, duplicate_of = judgment.duplicate, judgment.duplicate_of
+
+    # Deterministic backstop: small local models don't recognize offensive words
+    # outside English, so a blocklisted term forces suitable=false regardless of
+    # what the LLM said (e.g. Slovak "kokot" that llama3.2 passes as clean).
+    if suitable and heuristic_judge.find_profanity(req.name) is not None:
+        suitable = False
+        reason = "Name contains offensive or explicit language."
 
     # Deterministic backstop: small local models miss even exact matches, so an
     # exact/normalized duplicate is forced true regardless of what the LLM said.
@@ -31,8 +39,8 @@ def _to_response(judgment, req: POICheckRequest, model: str) -> POICheckResponse
         duplicate, duplicate_of = True, exact
 
     return POICheckResponse(
-        suitable=judgment.suitable,
-        reason=judgment.reason,
+        suitable=suitable,
+        reason=reason,
         model=model,
         duplicate=duplicate,
         duplicate_of=duplicate_of,

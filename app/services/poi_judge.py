@@ -12,7 +12,12 @@ names (candidates). You must produce two judgments.
 location, geography, or whether such a place could plausibly exist anywhere —
 those are irrelevant. Only decide whether the label itself is acceptable.
 Set suitable=false ONLY when the name is:
-- profane, offensive, or just expressive/vulgar words rather than a real label,
+- profane, offensive, explicit, sexual, hateful, or slur/vulgar content, OR just
+  expressive words rather than a real label. Check this in ANY language, not just
+  English — reject offensive or explicit words written in any language, script,
+  or alphabet (e.g. French, German, Spanish, Slovak, Arabic, Chinese, Russian,
+  Hindi, etc.), including transliterations and deliberate obfuscations
+  (l33tspeak, inserted symbols, spaced-out letters) meant to disguise such words,
 - total nonsense or gibberish (random characters, keyboard mashing, placeholder
   text like "asdf" or "lorem ipsum"),
 - a clearly misspelled label (e.g. "pharmaci", "groceriez", "restraunt").
