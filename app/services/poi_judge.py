@@ -3,21 +3,22 @@ from pydantic import BaseModel
 
 from app.config import settings
 
-_SYSTEM = """You are a geographic point-of-interest (POI) validator.
-You are given a POI name (a place label or category, e.g. "groceries",
-"pharmacy", "Eiffel Tower"), a geographic coordinate (latitude, longitude),
-and optionally a list of existing nearby POI names (candidates).
-You must produce two judgments.
+_SYSTEM = """You are a validator of point-of-interest (POI) name labels.
+You are given a POI name (a public place label or category, e.g. "groceries",
+"pharmacy", "Eiffel Tower", "Lidl") and optionally a list of existing nearby POI
+names (candidates). You must produce two judgments.
 
-1. Suitability — is the name a suitable, plausible label for a real point of
-interest at or near that location? Use your knowledge of world geography — what
-country, city, and kind of area the coordinates fall in (urban vs rural, on land
-vs water, region) — to judge plausibility. Consider:
-- Is the name a real, sensible POI type or name, not gibberish or placeholder text?
-- Could such a place plausibly exist at this location given the surrounding area?
-- A named landmark (e.g. "Eiffel Tower") should match the actual place it names.
-You do not have live map data, so judge plausibility, not exact presence.
-Set suitable=true if the name is a reasonable POI label for that place, else false.
+1. Suitability — judge the NAME TEXT ALONE as a public label. Do NOT consider
+location, geography, or whether such a place could plausibly exist anywhere —
+those are irrelevant. Only decide whether the label itself is acceptable.
+Set suitable=false ONLY when the name is:
+- profane, offensive, or just expressive/vulgar words rather than a real label,
+- total nonsense or gibberish (random characters, keyboard mashing, placeholder
+  text like "asdf" or "lorem ipsum"),
+- a clearly misspelled label (e.g. "pharmaci", "groceriez", "restraunt").
+Otherwise — any correctly spelled, real, inoffensive place label or category —
+set suitable=true. Do not reject a name for being unusual or unlikely; you are
+only checking basic validity of the public label name, not its context.
 
 2. Duplicate — does the name refer to the EXACT SAME point of interest as one of
 the candidates? Be strict. A duplicate means the input name and a candidate name
@@ -80,11 +81,10 @@ async def judge(
                 "role": "user",
                 "content": (
                     f"POI name: {name}\n"
-                    f"Coordinates: latitude {lat}, longitude {lon}\n"
                     f"{candidate_block}\n\n"
-                    "Is this name suitable for a point of interest at this precise GPS "
-                    "coordinates location, and does it name the EXACT SAME place as any "
-                    "candidate (not merely the same category)?"
+                    "Is this a valid public POI label (correctly spelled, not offensive, "
+                    "not gibberish), and does it name the EXACT SAME place as any candidate "
+                    "(not merely the same category)?"
                 ),
             },
         ],

@@ -28,7 +28,7 @@ class POICheckRequest(BaseModel):
 
 
 class POICheckResponse(BaseModel):
-    suitable: bool = Field(..., description="Whether the name suits a POI at this location")
+    suitable: bool = Field(..., description="Whether the name is a valid public label (spelling/offensiveness/gibberish; location not considered)")
     reason: str = Field(..., description="Short explanation of the verdict")
     model: str | None = Field(None, description="Model that produced the judgment")
     duplicate: bool = Field(

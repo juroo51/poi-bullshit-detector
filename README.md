@@ -3,30 +3,31 @@
 An AI service that vets **points of interest**. You POST a POI name, a
 coordinate, and optionally a list of existing nearby POI names; the service asks
 a **free, locally-run LLM** (via [Ollama](https://ollama.com)) whether that name
-is a suitable, plausible label for a place at that location, and whether it
-duplicates one of the supplied names. It returns a `true` / `false` suitability
-verdict with a short reason plus a duplicate flag. No API key, no cloud.
+is a valid public label — correctly spelled, not offensive, not gibberish — and
+whether it duplicates one of the supplied names. It returns a `true` / `false`
+suitability verdict with a short reason plus a duplicate flag. No API key, no
+cloud.
 
 ```
 POST /check  { "name": "groceries", "lat": 48.143890, "lon": 17.283289, "candidates": ["Pharmacy"] }
         ↓
-{ "suitable": true, "reason": "These coordinates fall in urban Bratislava, where a grocery store is entirely plausible.", "model": "llama3.2", "duplicate": false, "duplicate_of": null }
+{ "suitable": true, "reason": "'groceries' is a correctly spelled, inoffensive POI label.", "model": "llama3.2", "duplicate": false, "duplicate_of": null }
 ```
 
 ## How it works
 
-The model judges **plausibility**, not exact presence — it has no live map
-data. Given the name and the coordinate it reasons from its knowledge of world
-geography (country, city, urban vs rural, land vs water) about whether such a
-POI could reasonably exist there, and whether the name is a real POI label
-rather than gibberish or placeholder text. The output is constrained to a typed
-shape via Ollama's JSON-schema structured output.
+The model judges the **label text alone** — it does not consider location,
+geography, or whether such a place could exist at the coordinate. It only checks
+basic validity of the public label: `suitable=false` when the name is profane or
+just expressive/vulgar words, total nonsense or gibberish (keyboard mashing,
+placeholder text), or a clearly misspelled label; otherwise `suitable=true`. The
+output is constrained to a typed shape via Ollama's JSON-schema structured
+output.
 
 If Ollama isn't running (or `ENABLE_LLM=false`), `/check` transparently falls
-back to a key-free **heuristic judge** that sanity-checks the name only — it
-rejects placeholder text and gibberish but can't assess whether the place fits
-the coordinates. The `model` field in the response tells you which ran
-(`llama3.2` vs `heuristic`).
+back to a key-free **heuristic judge** that does the same kind of name-only
+sanity check — it rejects placeholder text and gibberish. The `model` field in
+the response tells you which ran (`llama3.2` vs `heuristic`).
 
 ### Duplicate detection
 
@@ -73,11 +74,11 @@ uvicorn app.main:app --port 8000
 curl -s localhost:8000/check -H 'content-type: application/json' \
   -d '{"name": "groceries", "lat": 48.143890, "lon": 17.283289}' | python -m json.tool
 
-# Not suitable — a landmark nowhere near its real location
+# Not suitable — a misspelled label
 curl -s localhost:8000/check -H 'content-type: application/json' \
-  -d '{"name": "Eiffel Tower", "lat": 48.143890, "lon": 17.283289}' | python -m json.tool
+  -d '{"name": "pharmaci", "lat": 48.143890, "lon": 17.283289}' | python -m json.tool
 
-# Not suitable — placeholder text
+# Not suitable — placeholder / gibberish text
 curl -s localhost:8000/check -H 'content-type: application/json' \
   -d '{"name": "lorem ipsum", "lat": 48.143890, "lon": 17.283289}' | python -m json.tool
 
@@ -109,7 +110,7 @@ duplicates — it defaults to `[]` (no duplicate checking).
 ```json
 {
   "suitable": true,
-  "reason": "Urban Bratislava; a grocery store is plausible.",
+  "reason": "'groceries' is a correctly spelled, inoffensive POI label.",
   "model": "llama3.2",
   "duplicate": false,
   "duplicate_of": null
@@ -118,7 +119,7 @@ duplicates — it defaults to `[]` (no duplicate checking).
 
 | Field          | Type            | Meaning                                                        |
 | -------------- | --------------- | -------------------------------------------------------------- |
-| `suitable`     | `bool`          | Whether the name suits a POI at this location                  |
+| `suitable`     | `bool`          | Whether the name is a valid public label (spelling/offensiveness/gibberish) |
 | `reason`       | `string`        | Short explanation of the verdict                               |
 | `model`        | `string`        | Which judge ran — `llama3.2` or `heuristic`                    |
 | `duplicate`    | `bool`          | Whether `name` duplicates one of the `candidates`              |
